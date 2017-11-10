@@ -85,7 +85,7 @@ class ElementResolver
         }
 
         return $this->firstOrFail([
-            $field, "input[name={$field}]", "textarea[name={$field}]"
+            $field, "input[name='{$field}']", "textarea[name='{$field}']"
         ]);
     }
 
@@ -102,8 +102,29 @@ class ElementResolver
         }
 
         return $this->firstOrFail([
-            $field, "select[name={$field}]"
+            $field, "select[name='{$field}']"
         ]);
+    }
+
+    /**
+     * Resolve all the options with the given value on the select field.
+     *
+     * @param string  $field
+     * @param array  $values
+     * @return array
+     */
+    public function resolveSelectOptions($field, array $values)
+    {
+        $options = $this->resolveForSelection($field)
+                ->findElements(WebDriverBy::tagName('option'));
+
+        if (empty($options)) {
+            return [];
+        }
+
+        return array_filter($options, function($option) use ($values) {
+            return in_array($option->getAttribute('value'), $values);
+        });
     }
 
     /**
@@ -119,8 +140,14 @@ class ElementResolver
             return $element;
         }
 
+        if (is_null($value)) {
+            throw new InvalidArgumentException(
+                "No value was provided for radio button [{$field}]."
+            );
+        }
+
         return $this->firstOrFail([
-            $field, "input[type=radio][name={$field}][value={$value}]"
+            $field, "input[type=radio][name='{$field}'][value='{$value}']"
         ]);
     }
 
@@ -128,16 +155,23 @@ class ElementResolver
      * Resolve the element for a given checkbox "field".
      *
      * @param  string  $field
+     * @param  string  $value
      * @return \Facebook\WebDriver\Remote\RemoteWebElement
      */
-    public function resolveForChecking($field)
+    public function resolveForChecking($field, $value = null)
     {
         if (! is_null($element = $this->findById($field))) {
             return $element;
         }
 
+        $selector = "input[type=checkbox][name='{$field}']";
+
+        if (! is_null($value)) {
+            $selector .= "[value='{$value}']";
+        }
+
         return $this->firstOrFail([
-            $field, "input[type=checkbox][name={$field}]"
+            $field, $selector
         ]);
     }
 
@@ -154,7 +188,7 @@ class ElementResolver
         }
 
         return $this->firstOrFail([
-            $field, "input[type=file][name={$field}]"
+            $field, "input[type=file][name='{$field}']"
         ]);
     }
 
@@ -198,8 +232,9 @@ class ElementResolver
      */
     protected function findButtonByName($button)
     {
-        if (! is_null($element = $this->find("input[type=submit][name={$button}]")) ||
-            ! is_null($element = $this->find("button[name={$button}]"))) {
+        if (! is_null($element = $this->find("input[type=submit][name='{$button}']")) ||
+            ! is_null($element = $this->find("input[type=button][value='{$button}']")) ||
+            ! is_null($element = $this->find("button[name='{$button}']"))) {
             return $element;
         }
     }
@@ -242,7 +277,7 @@ class ElementResolver
      */
     protected function findById($selector)
     {
-        if (Str::startsWith($selector, '#')) {
+        if (preg_match('/^#[\w\-:]+$/', $selector)) {
             return $this->driver->findElement(WebDriverBy::id(substr($selector, 1)));
         }
     }
@@ -290,6 +325,10 @@ class ElementResolver
      */
     public function findOrFail($selector)
     {
+        if (! is_null($element = $this->findById($selector))) {
+            return $element;
+        }
+
         return $this->driver->findElement(
             WebDriverBy::cssSelector($this->format($selector))
         );
@@ -322,9 +361,17 @@ class ElementResolver
      */
     public function format($selector)
     {
+        $sortedElements = collect($this->elements)->sortByDesc(function($element, $key){
+            return strlen($key);
+        })->toArray();
+
         $selector = str_replace(
-            array_keys($this->elements), array_values($this->elements), $selector
+            array_keys($sortedElements), array_values($sortedElements), $originalSelector = $selector
         );
+
+        if (starts_with($selector, '@') && $selector === $originalSelector) {
+            $selector = '[dusk="'.explode('@', $selector)[1].'"]';
+        }
 
         return trim($this->prefix.' '.$selector);
     }

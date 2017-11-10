@@ -2,10 +2,11 @@
 
 namespace Laravel\Dusk\Console;
 
+use Dotenv\Dotenv;
 use Illuminate\Console\Command;
 use Symfony\Component\Finder\Finder;
-use Symfony\Component\Process\Process;
 use Symfony\Component\Process\ProcessBuilder;
+use Symfony\Component\Process\Exception\RuntimeException;
 
 class DuskCommand extends Command
 {
@@ -22,6 +23,13 @@ class DuskCommand extends Command
      * @var string
      */
     protected $description = 'Run the Dusk tests for the application';
+
+    /**
+     * Indicates if the project has its own PHPUnit configuration.
+     *
+     * @var boolean
+     */
+    protected $hasPhpUnitConfiguration = false;
 
     /**
      * Create a new command instance.
@@ -44,29 +52,37 @@ class DuskCommand extends Command
     {
         $this->purgeScreenshots();
 
-        $options = implode(' ', array_slice($_SERVER['argv'], 2));
+        $this->purgeConsoleLogs();
 
-        $this->withDuskEnvironment(function () use ($options) {
-            (new ProcessBuilder())
+        $options = array_slice($_SERVER['argv'], 2);
+
+        return $this->withDuskEnvironment(function () use ($options) {
+            $process = (new ProcessBuilder())
                 ->setTimeout(null)
                 ->setPrefix($this->binary())
                 ->setArguments($this->phpunitArguments($options))
-                ->getProcess()
-                ->setTty(PHP_OS !== 'WINNT')
-                ->run(function ($type, $line) {
-                    $this->output->write($line);
-                });
+                ->getProcess();
+
+            try {
+                $process->setTty(true);
+            } catch (RuntimeException $e) {
+                $this->output->writeln('Warning: '.$e->getMessage());
+            }
+
+            return $process->run(function ($type, $line) {
+                $this->output->write($line);
+            });
         });
     }
 
     /**
      * Get the PHP binary to execute.
      *
-     * @return string
+     * @return array
      */
     protected function binary()
     {
-        return PHP_OS === 'WINNT' ? base_path('vendor\bin\phpunit.bat') : 'vendor/bin/phpunit';
+        return [PHP_BINARY, 'vendor/phpunit/phpunit/phpunit'];
     }
 
     /**
@@ -76,9 +92,7 @@ class DuskCommand extends Command
      */
     protected function phpunitArguments($options)
     {
-        return array_merge([], [
-            '-c', base_path('phpunit.dusk.xml'), $options
-        ]);
+        return array_merge(['-c', base_path('phpunit.dusk.xml')], $options);
     }
 
     /**
@@ -98,26 +112,46 @@ class DuskCommand extends Command
     }
 
     /**
+     * Purge the console logs.
+     *
+     * @return void
+     */
+    protected function purgeConsoleLogs()
+    {
+        $files = Finder::create()->files()
+            ->in(base_path('tests/Browser/console'))
+            ->name('*.log');
+
+        foreach ($files as $file) {
+            @unlink($file->getRealPath());
+        }
+    }
+
+    /**
      * Run the given callback with the Dusk configuration files.
      *
      * @param  \Closure  $callback
-     * @return void
+     * @return mixed
      */
     protected function withDuskEnvironment($callback)
     {
         if (file_exists(base_path($this->duskFile()))) {
-            $this->backupEnvironment();
+            if (file_get_contents(base_path('.env')) !== file_get_contents(base_path($this->duskFile()))) {
+                $this->backupEnvironment();
+            }
+
+            $this->refreshEnvironment();
         }
 
         $this->writeConfiguration();
 
-        $callback();
+        return tap($callback(), function () {
+            $this->removeConfiguration();
 
-        $this->removeConfiguration();
-
-        if (file_exists(base_path($this->duskFile()))) {
-            $this->restoreEnvironment();
-        }
+            if (file_exists(base_path($this->duskFile())) && file_exists(base_path('.env.backup'))) {
+                $this->restoreEnvironment();
+            }
+        });
     }
 
     /**
@@ -145,13 +179,27 @@ class DuskCommand extends Command
     }
 
     /**
+     * Refresh the current environment variables.
+     *
+     * @return void
+     */
+    protected function refreshEnvironment()
+    {
+        (new Dotenv(base_path()))->overload();
+    }
+
+    /**
      * Write the Dusk PHPUnit configuration.
      *
      * @return void
      */
     protected function writeConfiguration()
     {
-        copy(realpath(__DIR__.'/../../stubs/phpunit.xml'), base_path('phpunit.dusk.xml'));
+        if (! file_exists($file = base_path('phpunit.dusk.xml'))) {
+            copy(realpath(__DIR__.'/../../stubs/phpunit.xml'), $file);
+        } else {
+            $this->hasPhpUnitConfiguration = true;
+        }
     }
 
     /**
@@ -161,7 +209,9 @@ class DuskCommand extends Command
      */
     protected function removeConfiguration()
     {
-        unlink(base_path('phpunit.dusk.xml'));
+        if (! $this->hasPhpUnitConfiguration) {
+            unlink(base_path('phpunit.dusk.xml'));
+        }
     }
 
     /**
